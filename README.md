@@ -61,9 +61,88 @@ python audio_player.py --help
 - WAV (.wav)
 - OGG (.ogg)
 - FLAC (.flac)
-- M4A (.m4a) - Requires SDL_mixer with AAC/M4A codec support
+- M4A (.m4a)
 
-**Note:** M4A/AAC format support depends on your system's SDL_mixer installation. If you encounter errors playing M4A files, you may need to install additional audio codecs or use a different format.
+### M4A support notes (Windows)
+
+`pygame`/SDL_mixer **may not** be able to decode `.m4a` (AAC) on some systems. If you see errors like `pygame.error: ModPlug_Load failed`, this project will try a best-effort fallback using **FFmpeg's** `ffplay` (if installed and available on `PATH`).
+
+If M4A playback fails:
+- Install FFmpeg and ensure `ffplay` is on `PATH`, or
+- Convert the file to `.ogg` or `.wav`.
+
+### Installing FFmpeg (for `ffplay`)
+
+This project uses `ffplay` (included with FFmpeg) as an optional fallback player for `.m4a` files.
+
+#### Windows 11
+
+**Option 1: winget**
+
+```bash
+winget install --id Gyan.FFmpeg
+```
+
+Close and reopen your terminal, then verify:
+
+```bash
+ffplay -version
+```
+
+**Option 2: manual download**
+
+1. Download a Windows FFmpeg build: https://www.gyan.dev/ffmpeg/builds/
+2. Extract it (for example to `C:\ffmpeg`)
+3. Add `C:\ffmpeg\bin` to your `PATH`
+4. Verify:
+
+```bash
+where ffplay
+ffplay -version
+```
+
+#### macOS
+
+Using Homebrew:
+
+```bash
+brew install ffmpeg
+```
+
+Verify:
+
+```bash
+which ffplay
+ffplay -version
+```
+
+#### Linux
+
+**Debian/Ubuntu:**
+
+```bash
+sudo apt update
+sudo apt install ffmpeg
+```
+
+**Fedora:**
+
+```bash
+sudo dnf install ffmpeg
+```
+
+**Arch:**
+
+```bash
+sudo pacman -S ffmpeg
+```
+
+Verify:
+
+```bash
+which ffplay
+ffplay -version
+```
 
 ## Requirements
 
