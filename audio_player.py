@@ -17,7 +17,8 @@ class AudioPlayer:
     def __init__(self):
         """Initialize the audio player."""
         pygame.mixer.init()
-        self.supported_formats = ('.mp3', '.wav', '.ogg', '.flac')
+        # Note: .m4a support requires SDL_mixer with AAC/M4A codec support
+        self.supported_formats = ('.mp3', '.wav', '.ogg', '.flac', '.m4a')
     
     def is_audio_file(self, filepath):
         """Check if a file is a supported audio format."""
