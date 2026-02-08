@@ -7,7 +7,6 @@ Plays audio files from a file or directory path with looping support.
 import argparse
 import os
 import sys
-from pathlib import Path
 import pygame
 import time
 
@@ -75,6 +74,12 @@ class AudioPlayer:
         
         print(f"Found {len(audio_files)} audio file(s)")
         
+        # Validate loop usage
+        if loop and len(audio_files) > 1:
+            print("Error: --loop can only be used with a single audio file.")
+            print("Use --loop-all to loop multiple files.")
+            return
+        
         # Handle single file looping
         if len(audio_files) == 1 and loop:
             print(f"Looping: {audio_files[0]}")
@@ -104,8 +109,7 @@ class AudioPlayer:
         else:
             for audio_file in audio_files:
                 self.play_file(audio_file)
-        
-        print("Playback finished")
+            print("Playback finished")
 
 
 def main():
