@@ -29,6 +29,8 @@ class AudioPlayer:
         self.play_counts = Counter()
         self.run_started_at = datetime.now()
 
+        self._run_log_header_written = False
+
     def is_audio_file(self, filepath):
         """Check if a file is a supported audio format."""
         return filepath.lower().endswith(self.supported_formats)
@@ -82,41 +84,47 @@ class AudioPlayer:
     def _increment_play_count(self, filepath: str) -> None:
         self.play_counts[self._normalize_log_path(filepath)] += 1
 
-    def write_run_log(self) -> None:
-        """Append a run entry to the play log file."""
-        ended_at = datetime.now()
-        duration_s = int((ended_at - self.run_started_at).total_seconds())
-
-        total = sum(self.play_counts.values())
-        lines = []
-        lines.append("=" * 60)
-        lines.append(f"Run start: {self.run_started_at.isoformat(sep=' ', timespec='seconds')}")
-        lines.append(f"Run end:   {ended_at.isoformat(sep=' ', timespec='seconds')}")
-        lines.append(f"Duration:  {duration_s}s")
-        lines.append(f"Total plays (this run): {total}")
-        lines.append("Plays by file:")
-
-        if not self.play_counts:
-            lines.append("  (no plays)")
-        else:
-            for path, count in self.play_counts.most_common():
-                lines.append(f"  {count}  {path}")
-
-        lines.append("")
-
+    def _write_run_log_header_if_needed(self) -> None:
+        if self._run_log_header_written:
+            return
         try:
             with open(self.log_file, 'a', encoding='utf-8') as f:
-                f.write("\n".join(lines))
+                f.write("=" * 60 + "\n")
+                f.write(f"Run start: {self.run_started_at.isoformat(sep=' ', timespec='seconds')}\n")
+            self._run_log_header_written = True
         except Exception as e:
-            print(f"Warning: failed to write play log '{self.log_file}': {e}")
+            print(f"Warning: failed to write play log header '{self.log_file}': {e}")
+
+    def _append_log_line(self, line: str) -> None:
+        self._write_run_log_header_if_needed()
+        try:
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write(line + "\n")
+        except Exception as e:
+            print(f"Warning: failed to write to play log '{self.log_file}': {e}")
+
+    def _append_play_begin(self, filepath: str) -> None:
+        ts = datetime.now().isoformat(sep=' ', timespec='seconds')
+        self._append_log_line(f"PLAY_BEGIN {ts}  {self._normalize_log_path(filepath)}")
+
+    def _append_play_event(self, filepath: str) -> None:
+        """Append a single successful play event so the log updates as looping continues."""
+        ts = datetime.now().isoformat(sep=' ', timespec='seconds')
+        self._append_log_line(f"PLAY {ts}  {self._normalize_log_path(filepath)}")
+
+    def _append_play_fail(self, filepath: str, reason: str) -> None:
+        ts = datetime.now().isoformat(sep=' ', timespec='seconds')
+        self._append_log_line(f"PLAY_FAIL {ts}  {self._normalize_log_path(filepath)}  {reason}")
 
     def play_file(self, filepath):
         """Play a single audio file."""
+        self._append_play_begin(filepath)
         try:
             print(f"Playing: {filepath}")
             pygame.mixer.music.load(filepath)
             pygame.mixer.music.play()
             self._increment_play_count(filepath)
+            self._append_play_event(filepath)
 
             # Wait for the music to finish playing
             while pygame.mixer.music.get_busy():
@@ -128,13 +136,17 @@ class AudioPlayer:
                 # Count as a play only if fallback succeeds
                 if self._play_with_ffplay(filepath, loop=False):
                     self._increment_play_count(filepath)
+                    self._append_play_event(filepath)
                     return
+                self._append_play_fail(filepath, f"m4a_decode_failed:{e}")
                 print("M4A playback failed.")
                 print("To enable M4A on Windows, install FFmpeg (ffplay) and ensure 'ffplay' is on PATH,")
                 print("or convert the file to .ogg/.wav.")
                 return
+            self._append_play_fail(filepath, f"pygame_error:{e}")
             print(f"Error playing {filepath}: {e}")
         except Exception as e:
+            self._append_play_fail(filepath, f"error:{e}")
             print(f"Error playing {filepath}: {e}")
 
     def play(self, path, loop=False, loop_all=False):
@@ -166,20 +178,31 @@ class AudioPlayer:
             print(f"Looping: {target}")
             print("Press Ctrl+C to stop")
             try:
-                if target.lower().endswith('.m4a'):
-                    # pygame loop for M4A is often unsupported; prefer ffplay if available.
-                    if self._play_with_ffplay(target, loop=True):
-                        # For infinite loop we can't know the exact count; record as 1 start.
-                        self._increment_play_count(target)
-                        return
-                    print("ffplay not available; attempting pygame loop (may fail if M4A codec not supported)...")
-                pygame.mixer.music.load(target)
-                pygame.mixer.music.play(-1)  # -1 means loop indefinitely
-                self._increment_play_count(target)
-
-                # Keep playing until interrupted
+                # To keep the play log updated, we loop by re-playing one iteration at a time,
+                # which lets us increment counts and append a log line per iteration.
                 while True:
-                    time.sleep(1)
+                    self._append_play_begin(target)
+                    if target.lower().endswith('.m4a'):
+                        # Prefer ffplay if available; emulate looping by repeated single plays.
+                        if self._play_with_ffplay(target, loop=False):
+                            self._increment_play_count(target)
+                            self._append_play_event(target)
+                        else:
+                            self._append_play_fail(target, "ffplay_not_available")
+                            # Fall back to pygame single-play; may fail depending on codecs.
+                            pygame.mixer.music.load(target)
+                            pygame.mixer.music.play()
+                            self._increment_play_count(target)
+                            self._append_play_event(target)
+                            while pygame.mixer.music.get_busy():
+                                time.sleep(0.1)
+                    else:
+                        pygame.mixer.music.load(target)
+                        pygame.mixer.music.play()
+                        self._increment_play_count(target)
+                        self._append_play_event(target)
+                        while pygame.mixer.music.get_busy():
+                            time.sleep(0.1)
             except KeyboardInterrupt:
                 print("\nStopped by user")
                 pygame.mixer.music.stop()
@@ -206,6 +229,33 @@ class AudioPlayer:
                 self.play_file(audio_file)
             print("Playback finished")
 
+    def write_run_log(self) -> None:
+        """Append a run summary to the play log file."""
+        ended_at = datetime.now()
+        duration_s = int((ended_at - self.run_started_at).total_seconds())
+
+        total = sum(self.play_counts.values())
+
+        lines = []
+        lines.append(f"Run end:   {ended_at.isoformat(sep=' ', timespec='seconds')}")
+        lines.append(f"Duration:  {duration_s}s")
+        lines.append(f"Total plays (this run): {total}")
+        lines.append("Plays by file:")
+
+        if not self.play_counts:
+            lines.append("  (no plays)")
+        else:
+            for path, count in self.play_counts.most_common():
+                lines.append(f"  {count}  {path}")
+
+        lines.append("")
+
+        self._write_run_log_header_if_needed()
+        try:
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write("\n".join(lines))
+        except Exception as e:
+            print(f"Warning: failed to write play log '{self.log_file}': {e}")
 
 def main():
     """Main entry point for the audio player."""
