@@ -6,7 +6,7 @@ A simple Python script to play audio files from the command line.
 
 - Play single audio files or all files in a directory
 - Loop single files or all files indefinitely
-- Supports MP3, WAV, OGG, and FLAC formats
+- Supports MP3, WAV, OGG, FLAC, and M4A formats
 - Simple command-line interface
 
 ## Installation
@@ -61,6 +61,7 @@ python audio_player.py --help
 - WAV (.wav)
 - OGG (.ogg)
 - FLAC (.flac)
+- M4A (.m4a)
 
 ## Requirements
 
