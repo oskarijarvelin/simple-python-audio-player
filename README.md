@@ -61,7 +61,9 @@ python audio_player.py --help
 - WAV (.wav)
 - OGG (.ogg)
 - FLAC (.flac)
-- M4A (.m4a)
+- M4A (.m4a) - Requires SDL_mixer with AAC/M4A codec support
+
+**Note:** M4A/AAC format support depends on your system's SDL_mixer installation. If you encounter errors playing M4A files, you may need to install additional audio codecs or use a different format.
 
 ## Requirements
 
