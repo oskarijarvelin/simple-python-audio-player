@@ -11,18 +11,24 @@ import pygame
 import time
 import subprocess
 from shutil import which
+from collections import Counter
+from datetime import datetime
 
 
 class AudioPlayer:
     """Simple audio player class for playing audio files."""
 
-    def __init__(self):
+    def __init__(self, log_file: str = 'play_log.txt'):
         """Initialize the audio player."""
         pygame.mixer.init()
         # Note: .m4a support via pygame depends on SDL_mixer codec support.
         # This script includes a best-effort Windows-friendly fallback for .m4a using ffplay (ffmpeg).
         self.supported_formats = ('.mp3', '.wav', '.ogg', '.flac', '.m4a')
-    
+
+        self.log_file = log_file
+        self.play_counts = Counter()
+        self.run_started_at = datetime.now()
+
     def is_audio_file(self, filepath):
         """Check if a file is a supported audio format."""
         return filepath.lower().endswith(self.supported_formats)
@@ -67,12 +73,50 @@ class AudioPlayer:
         except Exception:
             return False
 
+    def _normalize_log_path(self, filepath: str) -> str:
+        try:
+            return os.path.abspath(filepath)
+        except Exception:
+            return filepath
+
+    def _increment_play_count(self, filepath: str) -> None:
+        self.play_counts[self._normalize_log_path(filepath)] += 1
+
+    def write_run_log(self) -> None:
+        """Append a run entry to the play log file."""
+        ended_at = datetime.now()
+        duration_s = int((ended_at - self.run_started_at).total_seconds())
+
+        total = sum(self.play_counts.values())
+        lines = []
+        lines.append("=" * 60)
+        lines.append(f"Run start: {self.run_started_at.isoformat(sep=' ', timespec='seconds')}")
+        lines.append(f"Run end:   {ended_at.isoformat(sep=' ', timespec='seconds')}")
+        lines.append(f"Duration:  {duration_s}s")
+        lines.append(f"Total plays (this run): {total}")
+        lines.append("Plays by file:")
+
+        if not self.play_counts:
+            lines.append("  (no plays)")
+        else:
+            for path, count in self.play_counts.most_common():
+                lines.append(f"  {count}  {path}")
+
+        lines.append("")
+
+        try:
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write("\n".join(lines))
+        except Exception as e:
+            print(f"Warning: failed to write play log '{self.log_file}': {e}")
+
     def play_file(self, filepath):
         """Play a single audio file."""
         try:
             print(f"Playing: {filepath}")
             pygame.mixer.music.load(filepath)
             pygame.mixer.music.play()
+            self._increment_play_count(filepath)
 
             # Wait for the music to finish playing
             while pygame.mixer.music.get_busy():
@@ -81,7 +125,9 @@ class AudioPlayer:
             # Common on Windows with .m4a when SDL_mixer lacks AAC/M4A codec support.
             if filepath.lower().endswith('.m4a'):
                 print(f"pygame could not decode M4A ({e}). Trying ffplay fallback...")
+                # Count as a play only if fallback succeeds
                 if self._play_with_ffplay(filepath, loop=False):
+                    self._increment_play_count(filepath)
                     return
                 print("M4A playback failed.")
                 print("To enable M4A on Windows, install FFmpeg (ffplay) and ensure 'ffplay' is on PATH,")
@@ -123,10 +169,13 @@ class AudioPlayer:
                 if target.lower().endswith('.m4a'):
                     # pygame loop for M4A is often unsupported; prefer ffplay if available.
                     if self._play_with_ffplay(target, loop=True):
+                        # For infinite loop we can't know the exact count; record as 1 start.
+                        self._increment_play_count(target)
                         return
                     print("ffplay not available; attempting pygame loop (may fail if M4A codec not supported)...")
                 pygame.mixer.music.load(target)
                 pygame.mixer.music.play(-1)  # -1 means loop indefinitely
+                self._increment_play_count(target)
 
                 # Keep playing until interrupted
                 while True:
@@ -189,6 +238,12 @@ Examples:
         help='Loop all audio files indefinitely'
     )
     
+    parser.add_argument(
+        '--log-file',
+        default='play_log.txt',
+        help='Path to a log file where this run\'s play counts will be appended (default: play_log.txt)'
+    )
+
     args = parser.parse_args()
     
     # Validate path
@@ -197,8 +252,11 @@ Examples:
         sys.exit(1)
     
     # Create and run player
-    player = AudioPlayer()
-    player.play(args.path, loop=args.loop, loop_all=args.loop_all)
+    player = AudioPlayer(log_file=args.log_file)
+    try:
+        player.play(args.path, loop=args.loop, loop_all=args.loop_all)
+    finally:
+        player.write_run_log()
 
 
 if __name__ == '__main__':

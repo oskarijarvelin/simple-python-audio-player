@@ -8,6 +8,7 @@ A simple Python script to play audio files from the command line.
 - Loop single files or all files indefinitely
 - Supports MP3, WAV, OGG, FLAC, and M4A formats
 - Simple command-line interface
+- Appends a per-run play log (how many times each file was played)
 
 ## Installation
 
@@ -54,6 +55,7 @@ python audio_player.py --help
 - `path` - Path to audio file or directory containing audio files (required)
 - `--loop` - Loop a single audio file indefinitely
 - `--loop-all` - Loop all audio files in a directory indefinitely
+- `--log-file` - Append this run's play counts to the given log file (default: `play_log.txt`)
 
 ## Supported Audio Formats
 
@@ -152,3 +154,10 @@ ffplay -version
 ## License
 
 This project is open source and available under the MIT License.
+
+## Play log
+
+After each run, the script appends a new entry to `play_log.txt` (or the file provided via `--log-file`) including:
+- Run start/end timestamps
+- Total plays during the run
+- Plays per file during the run
