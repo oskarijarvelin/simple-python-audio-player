@@ -10,6 +10,8 @@ import sys
 import pygame
 import time
 import subprocess
+import json
+import threading
 from shutil import which
 from collections import Counter
 from datetime import datetime
@@ -28,6 +30,7 @@ class AudioPlayer:
         self.log_file = log_file
         self.play_counts = Counter()
         self.run_started_at = datetime.now()
+        self.stop_flag = False
 
     def is_audio_file(self, filepath):
         """Check if a file is a supported audio format."""
@@ -206,6 +209,161 @@ class AudioPlayer:
                 self.play_file(audio_file)
             print("Playback finished")
 
+    def load_schedule(self, schedule_file):
+        """
+        Load and validate schedule from JSON file.
+        
+        Expected JSON format:
+        {
+            "schedules": [
+                {
+                    "start_time": "2026-02-09 18:00:00",
+                    "stop_time": "2026-02-09 20:00:00",
+                    "path": "/path/to/audio/file_or_directory"
+                }
+            ]
+        }
+        """
+        try:
+            with open(schedule_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            if 'schedules' not in data:
+                print("Error: JSON file must contain 'schedules' array")
+                return None
+            
+            schedules = data['schedules']
+            if not isinstance(schedules, list):
+                print("Error: 'schedules' must be an array")
+                return None
+            
+            # Validate each schedule entry
+            for i, schedule in enumerate(schedules):
+                if 'start_time' not in schedule:
+                    print(f"Error: Schedule {i} missing 'start_time'")
+                    return None
+                if 'stop_time' not in schedule:
+                    print(f"Error: Schedule {i} missing 'stop_time'")
+                    return None
+                if 'path' not in schedule:
+                    print(f"Error: Schedule {i} missing 'path'")
+                    return None
+                
+                # Validate datetime format
+                try:
+                    datetime.fromisoformat(schedule['start_time'])
+                except ValueError:
+                    print(f"Error: Schedule {i} has invalid start_time format. Use ISO format: YYYY-MM-DD HH:MM:SS")
+                    return None
+                
+                try:
+                    datetime.fromisoformat(schedule['stop_time'])
+                except ValueError:
+                    print(f"Error: Schedule {i} has invalid stop_time format. Use ISO format: YYYY-MM-DD HH:MM:SS")
+                    return None
+                
+                # Validate path exists
+                if not os.path.exists(schedule['path']):
+                    print(f"Error: Schedule {i} path '{schedule['path']}' does not exist")
+                    return None
+            
+            return schedules
+        
+        except json.JSONDecodeError as e:
+            print(f"Error parsing JSON file: {e}")
+            return None
+        except Exception as e:
+            print(f"Error loading schedule file: {e}")
+            return None
+
+    def play_scheduled(self, schedule_file):
+        """
+        Play audio files according to schedule from JSON file.
+        
+        Args:
+            schedule_file: Path to JSON file containing schedule
+        """
+        schedules = self.load_schedule(schedule_file)
+        if schedules is None:
+            return
+        
+        print(f"Loaded {len(schedules)} schedule(s)")
+        print("Monitoring schedule... Press Ctrl+C to stop")
+        
+        active_schedule = None
+        
+        try:
+            while True:
+                now = datetime.now()
+                
+                # Check if we need to start or stop playback
+                schedule_active = False
+                
+                for schedule in schedules:
+                    start_time = datetime.fromisoformat(schedule['start_time'])
+                    stop_time = datetime.fromisoformat(schedule['stop_time'])
+                    
+                    if start_time <= now < stop_time:
+                        schedule_active = True
+                        
+                        # Start new schedule if different from current
+                        if active_schedule != schedule:
+                            if active_schedule is not None:
+                                print(f"\nStopping previous schedule")
+                                self.stop_flag = True
+                                pygame.mixer.music.stop()
+                                time.sleep(0.5)
+                            
+                            print(f"\nStarting scheduled playback:")
+                            print(f"  Path: {schedule['path']}")
+                            print(f"  Start: {schedule['start_time']}")
+                            print(f"  Stop: {schedule['stop_time']}")
+                            
+                            active_schedule = schedule
+                            self.stop_flag = False
+                            
+                            # Start playback in background thread
+                            thread = threading.Thread(
+                                target=self._play_until_stopped,
+                                args=(schedule['path'],)
+                            )
+                            thread.daemon = True
+                            thread.start()
+                        
+                        break
+                
+                # Stop playback if no active schedule
+                if not schedule_active and active_schedule is not None:
+                    print(f"\nSchedule ended, stopping playback")
+                    self.stop_flag = True
+                    pygame.mixer.music.stop()
+                    active_schedule = None
+                
+                time.sleep(1)
+        
+        except KeyboardInterrupt:
+            print("\nStopped by user")
+            self.stop_flag = True
+            pygame.mixer.music.stop()
+
+    def _play_until_stopped(self, path):
+        """Play audio files from path in a loop until stop_flag is set."""
+        audio_files = self.get_audio_files(path)
+        
+        if not audio_files:
+            print("No audio files found in scheduled path")
+            return
+        
+        while not self.stop_flag:
+            for audio_file in audio_files:
+                if self.stop_flag:
+                    break
+                self.play_file(audio_file)
+            
+            # If only one file and we're not stopping, add small delay before repeating
+            if len(audio_files) == 1 and not self.stop_flag:
+                time.sleep(0.1)
+
 
 def main():
     """Main entry point for the audio player."""
@@ -218,11 +376,13 @@ Examples:
   %(prog)s song.mp3 --loop             # Loop a single file
   %(prog)s /path/to/music              # Play all files in directory
   %(prog)s /path/to/music --loop-all   # Loop all files in directory
+  %(prog)s --schedule schedule.json    # Play according to schedule file
         """
     )
     
     parser.add_argument(
         'path',
+        nargs='?',
         help='Path to audio file or directory containing audio files'
     )
     
@@ -244,17 +404,35 @@ Examples:
         help='Path to a log file where this run\'s play counts will be appended (default: play_log.txt)'
     )
 
+    parser.add_argument(
+        '--schedule',
+        help='Path to JSON file containing schedule for playing audio files at specific times'
+    )
+
     args = parser.parse_args()
     
-    # Validate path
-    if not os.path.exists(args.path):
-        print(f"Error: Path '{args.path}' does not exist.")
+    # Validate arguments
+    if not args.schedule and not args.path:
+        print("Error: path argument is required when not using --schedule")
+        parser.print_help()
         sys.exit(1)
     
-    # Create and run player
+    # Create player
     player = AudioPlayer(log_file=args.log_file)
+    
     try:
-        player.play(args.path, loop=args.loop, loop_all=args.loop_all)
+        # Handle scheduled mode
+        if args.schedule:
+            if not os.path.exists(args.schedule):
+                print(f"Error: Schedule file '{args.schedule}' does not exist.")
+                sys.exit(1)
+            player.play_scheduled(args.schedule)
+        else:
+            # Validate path for regular play mode
+            if not os.path.exists(args.path):
+                print(f"Error: Path '{args.path}' does not exist.")
+                sys.exit(1)
+            player.play(args.path, loop=args.loop, loop_all=args.loop_all)
     finally:
         player.write_run_log()
 
