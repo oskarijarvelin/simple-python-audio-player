@@ -31,6 +31,7 @@ class AudioPlayer:
         self.play_counts = Counter()
         self.run_started_at = datetime.now()
         self.stop_flag = False
+        self.playback_thread = None
 
     def is_audio_file(self, filepath):
         """Check if a file is a supported audio format."""
@@ -223,6 +224,8 @@ class AudioPlayer:
                 }
             ]
         }
+        
+        When multiple schedules overlap, the first matching schedule takes priority.
         """
         try:
             with open(schedule_file, 'r', encoding='utf-8') as f:
@@ -237,7 +240,7 @@ class AudioPlayer:
                 print("Error: 'schedules' must be an array")
                 return None
             
-            # Validate each schedule entry
+            # Validate each schedule entry and parse datetimes
             for i, schedule in enumerate(schedules):
                 if 'start_time' not in schedule:
                     print(f"Error: Schedule {i} missing 'start_time'")
@@ -249,17 +252,24 @@ class AudioPlayer:
                     print(f"Error: Schedule {i} missing 'path'")
                     return None
                 
-                # Validate datetime format
+                # Validate datetime format and parse
                 try:
-                    datetime.fromisoformat(schedule['start_time'])
+                    start_dt = datetime.fromisoformat(schedule['start_time'])
+                    schedule['_start_dt'] = start_dt
                 except ValueError:
                     print(f"Error: Schedule {i} has invalid start_time format. Use ISO format: YYYY-MM-DD HH:MM:SS")
                     return None
                 
                 try:
-                    datetime.fromisoformat(schedule['stop_time'])
+                    stop_dt = datetime.fromisoformat(schedule['stop_time'])
+                    schedule['_stop_dt'] = stop_dt
                 except ValueError:
                     print(f"Error: Schedule {i} has invalid stop_time format. Use ISO format: YYYY-MM-DD HH:MM:SS")
+                    return None
+                
+                # Validate start_time is before stop_time
+                if start_dt >= stop_dt:
+                    print(f"Error: Schedule {i} start_time must be before stop_time")
                     return None
                 
                 # Validate path exists
@@ -290,7 +300,7 @@ class AudioPlayer:
         print(f"Loaded {len(schedules)} schedule(s)")
         print("Monitoring schedule... Press Ctrl+C to stop")
         
-        active_schedule = None
+        active_schedule_id = None
         
         try:
             while True:
@@ -298,46 +308,57 @@ class AudioPlayer:
                 
                 # Check if we need to start or stop playback
                 schedule_active = False
+                current_schedule_id = None
                 
-                for schedule in schedules:
-                    start_time = datetime.fromisoformat(schedule['start_time'])
-                    stop_time = datetime.fromisoformat(schedule['stop_time'])
+                for i, schedule in enumerate(schedules):
+                    start_dt = schedule['_start_dt']
+                    stop_dt = schedule['_stop_dt']
                     
-                    if start_time <= now < stop_time:
+                    if start_dt <= now < stop_dt:
                         schedule_active = True
+                        current_schedule_id = i
                         
                         # Start new schedule if different from current
-                        if active_schedule != schedule:
-                            if active_schedule is not None:
+                        if active_schedule_id != current_schedule_id:
+                            # Stop previous playback
+                            if active_schedule_id is not None:
                                 print(f"\nStopping previous schedule")
                                 self.stop_flag = True
                                 pygame.mixer.music.stop()
-                                time.sleep(0.5)
+                                
+                                # Wait for previous thread to complete
+                                if self.playback_thread is not None and self.playback_thread.is_alive():
+                                    self.playback_thread.join(timeout=2.0)
                             
                             print(f"\nStarting scheduled playback:")
                             print(f"  Path: {schedule['path']}")
                             print(f"  Start: {schedule['start_time']}")
                             print(f"  Stop: {schedule['stop_time']}")
                             
-                            active_schedule = schedule
+                            active_schedule_id = current_schedule_id
                             self.stop_flag = False
                             
                             # Start playback in background thread
-                            thread = threading.Thread(
+                            self.playback_thread = threading.Thread(
                                 target=self._play_until_stopped,
                                 args=(schedule['path'],)
                             )
-                            thread.daemon = True
-                            thread.start()
+                            self.playback_thread.daemon = True
+                            self.playback_thread.start()
                         
                         break
                 
                 # Stop playback if no active schedule
-                if not schedule_active and active_schedule is not None:
+                if not schedule_active and active_schedule_id is not None:
                     print(f"\nSchedule ended, stopping playback")
                     self.stop_flag = True
                     pygame.mixer.music.stop()
-                    active_schedule = None
+                    
+                    # Wait for thread to complete
+                    if self.playback_thread is not None and self.playback_thread.is_alive():
+                        self.playback_thread.join(timeout=2.0)
+                    
+                    active_schedule_id = None
                 
                 time.sleep(1)
         
@@ -345,6 +366,10 @@ class AudioPlayer:
             print("\nStopped by user")
             self.stop_flag = True
             pygame.mixer.music.stop()
+            
+            # Wait for thread to complete
+            if self.playback_thread is not None and self.playback_thread.is_alive():
+                self.playback_thread.join(timeout=2.0)
 
     def _play_until_stopped(self, path):
         """Play audio files from path in a loop until stop_flag is set."""
