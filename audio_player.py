@@ -32,7 +32,8 @@ class AudioPlayer:
         self.run_started_at = datetime.now()
         self.stop_flag = False
         self.playback_thread = None
-
+        self._ffplay_proc = None
+        
         self._run_log_header_written = False
 
     def is_audio_file(self, filepath):
@@ -79,6 +80,32 @@ class AudioPlayer:
         except Exception:
             return False
 
+    def _play_with_ffplay_process(self, filepath: str) -> bool:
+        """Play a single file using ffplay as a subprocess we can terminate."""
+        ffplay = which('ffplay')
+        if not ffplay:
+            return False
+
+        args = [ffplay, '-nodisp', '-autoexit', '-loglevel', 'error', filepath]
+        try:
+            self._ffplay_proc = subprocess.Popen(args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            # Wait until it exits OR stop_flag becomes True
+            while True:
+                if self.stop_flag:
+                    try:
+                        self._ffplay_proc.terminate()
+                    except Exception:
+                        pass
+                    return True
+                rc = self._ffplay_proc.poll()
+                if rc is not None:
+                    return rc == 0
+                time.sleep(0.1)
+        except Exception:
+            return False
+        finally:
+            self._ffplay_proc = None
+
     def _normalize_log_path(self, filepath: str) -> str:
         try:
             return os.path.abspath(filepath)
@@ -119,6 +146,13 @@ class AudioPlayer:
     def _append_play_fail(self, filepath: str, reason: str) -> None:
         ts = datetime.now().isoformat(sep=' ', timespec='seconds')
         self._append_log_line(f"PLAY_FAIL {ts}  {self._normalize_log_path(filepath)}  {reason}")
+
+    def _append_schedule_event(self, event: str, schedule_index: int, start_dt: datetime, stop_dt: datetime, filepath: str) -> None:
+        ts = datetime.now().isoformat(sep=' ', timespec='seconds')
+        path = self._normalize_log_path(filepath)
+        self._append_log_line(
+            f"SCHEDULE_{event} {ts}  idx={schedule_index}  start={start_dt.isoformat(sep=' ', timespec='seconds')}  stop={stop_dt.isoformat(sep=' ', timespec='seconds')}  path={path}"
+        )
 
     def play_file(self, filepath):
         """Play a single audio file."""
@@ -232,6 +266,146 @@ class AudioPlayer:
             for audio_file in audio_files:
                 self.play_file(audio_file)
             print("Playback finished")
+
+    def _parse_schedule_time(self, value: str) -> datetime:
+        """Parse a schedule timestamp in 'YYYY-MM-DD HH:MM:SS' format."""
+        return datetime.strptime(value, '%Y-%m-%d %H:%M:%S')
+
+    def _resolve_schedule_path(self, schedule_path: str, audio_path: str) -> str:
+        """Resolve relative audio paths in schedule files relative to the schedule file location."""
+        if os.path.isabs(audio_path):
+            # On Windows, schedule may include POSIX-style absolute paths; treat those as-is.
+            return audio_path
+        base = os.path.dirname(os.path.abspath(schedule_path))
+        return os.path.abspath(os.path.join(base, audio_path))
+
+    def _stop_external_players(self) -> None:
+        if self._ffplay_proc and self._ffplay_proc.poll() is None:
+            try:
+                self._ffplay_proc.terminate()
+            except Exception:
+                pass
+
+    def _play_loop_until_stop(self, filepath: str) -> None:
+        """Play a single file in a loop until stop_flag is set, updating log each iteration."""
+        while not self.stop_flag:
+            try:
+                self._append_play_begin(filepath)
+
+                if filepath.lower().endswith('.m4a'):
+                    # Use ffplay subprocess mode so scheduled stop can terminate playback promptly.
+                    if self._play_with_ffplay_process(filepath):
+                        if not self.stop_flag:
+                            self._increment_play_count(filepath)
+                            self._append_play_event(filepath)
+                    else:
+                        # Attempt pygame as last resort (may fail for m4a)
+                        pygame.mixer.music.load(filepath)
+                        pygame.mixer.music.play()
+                        self._increment_play_count(filepath)
+                        self._append_play_event(filepath)
+                        while pygame.mixer.music.get_busy() and not self.stop_flag:
+                            time.sleep(0.1)
+                else:
+                    pygame.mixer.music.load(filepath)
+                    pygame.mixer.music.play()
+                    self._increment_play_count(filepath)
+                    self._append_play_event(filepath)
+                    while pygame.mixer.music.get_busy() and not self.stop_flag:
+                        time.sleep(0.1)
+            except Exception as e:
+                self._append_play_fail(filepath, f"scheduled_play_error:{e}")
+                time.sleep(1)
+
+    def play_scheduled(self, schedule_file: str) -> None:
+        """Play audio according to a JSON schedule file."""
+        try:
+            with open(schedule_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"Error: Failed to read schedule file '{schedule_file}': {e}")
+            return
+
+        schedules = data.get('schedules')
+        if not isinstance(schedules, list) or not schedules:
+            print("Error: schedule file must contain a non-empty 'schedules' array")
+            return
+
+        # Sort by start_time
+        def _start_dt(item):
+            return self._parse_schedule_time(item['start_time'])
+
+        schedules = sorted(schedules, key=_start_dt)
+
+        print(f"Loaded {len(schedules)} schedule(s)")
+
+        for idx, item in enumerate(schedules, start=1):
+            for key in ('start_time', 'stop_time', 'path'):
+                if key not in item:
+                    print(f"Error: schedule #{idx} missing key '{key}'")
+                    return
+
+            try:
+                start_dt = self._parse_schedule_time(item['start_time'])
+                stop_dt = self._parse_schedule_time(item['stop_time'])
+            except Exception as e:
+                print(f"Error: invalid date in schedule #{idx}: {e}")
+                return
+
+            if stop_dt <= start_dt:
+                print(f"Error: schedule #{idx} stop_time must be after start_time")
+                return
+
+            audio_path = self._resolve_schedule_path(schedule_file, item['path'])
+            if not os.path.exists(audio_path):
+                print(f"Error: schedule #{idx} audio path does not exist: {audio_path}")
+                return
+            if not self.is_audio_file(audio_path):
+                print(f"Error: schedule #{idx} unsupported audio file type: {audio_path}")
+                return
+
+            # Log schedule metadata before waiting/starting
+            self._append_schedule_event('ENTRY', idx, start_dt, stop_dt, audio_path)
+
+            now = datetime.now()
+            if now < start_dt:
+                wait_s = int((start_dt - now).total_seconds())
+                print(f"Schedule #{idx}: waiting {wait_s}s until {start_dt} to start {audio_path}")
+                while datetime.now() < start_dt:
+                    time.sleep(0.5)
+            else:
+                print(f"Schedule #{idx}: start_time already passed ({start_dt}); starting immediately")
+
+            print(f"Schedule #{idx}: playing until {stop_dt}")
+            self._append_schedule_event('START', idx, start_dt, stop_dt, audio_path)
+
+            self.stop_flag = False
+            self.playback_thread = threading.Thread(
+                target=self._play_loop_until_stop,
+                args=(audio_path,),
+                daemon=True,
+            )
+            self.playback_thread.start()
+
+            try:
+                while datetime.now() < stop_dt:
+                    time.sleep(0.2)
+            except KeyboardInterrupt:
+                print("\nStopped by user")
+
+            # Stop playback and wait for thread exit
+            self.stop_flag = True
+            try:
+                pygame.mixer.music.stop()
+            except Exception:
+                pass
+            self._stop_external_players()
+            if self.playback_thread:
+                self.playback_thread.join(timeout=5)
+
+            self._append_schedule_event('STOP', idx, start_dt, stop_dt, audio_path)
+
+        print("Scheduled playback finished")
 
     def write_run_log(self) -> None:
         """Append a run summary to the play log file."""
