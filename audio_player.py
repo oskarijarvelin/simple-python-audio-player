@@ -33,6 +33,8 @@ class AudioPlayer:
         self.stop_flag = False
         self.playback_thread = None
 
+        self._run_log_header_written = False
+
     def is_audio_file(self, filepath):
         """Check if a file is a supported audio format."""
         return filepath.lower().endswith(self.supported_formats)
@@ -86,41 +88,47 @@ class AudioPlayer:
     def _increment_play_count(self, filepath: str) -> None:
         self.play_counts[self._normalize_log_path(filepath)] += 1
 
-    def write_run_log(self) -> None:
-        """Append a run entry to the play log file."""
-        ended_at = datetime.now()
-        duration_s = int((ended_at - self.run_started_at).total_seconds())
-
-        total = sum(self.play_counts.values())
-        lines = []
-        lines.append("=" * 60)
-        lines.append(f"Run start: {self.run_started_at.isoformat(sep=' ', timespec='seconds')}")
-        lines.append(f"Run end:   {ended_at.isoformat(sep=' ', timespec='seconds')}")
-        lines.append(f"Duration:  {duration_s}s")
-        lines.append(f"Total plays (this run): {total}")
-        lines.append("Plays by file:")
-
-        if not self.play_counts:
-            lines.append("  (no plays)")
-        else:
-            for path, count in self.play_counts.most_common():
-                lines.append(f"  {count}  {path}")
-
-        lines.append("")
-
+    def _write_run_log_header_if_needed(self) -> None:
+        if self._run_log_header_written:
+            return
         try:
             with open(self.log_file, 'a', encoding='utf-8') as f:
-                f.write("\n".join(lines))
+                f.write("=" * 60 + "\n")
+                f.write(f"Run start: {self.run_started_at.isoformat(sep=' ', timespec='seconds')}\n")
+            self._run_log_header_written = True
         except Exception as e:
-            print(f"Warning: failed to write play log '{self.log_file}': {e}")
+            print(f"Warning: failed to write play log header '{self.log_file}': {e}")
+
+    def _append_log_line(self, line: str) -> None:
+        self._write_run_log_header_if_needed()
+        try:
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write(line + "\n")
+        except Exception as e:
+            print(f"Warning: failed to write to play log '{self.log_file}': {e}")
+
+    def _append_play_begin(self, filepath: str) -> None:
+        ts = datetime.now().isoformat(sep=' ', timespec='seconds')
+        self._append_log_line(f"PLAY_BEGIN {ts}  {self._normalize_log_path(filepath)}")
+
+    def _append_play_event(self, filepath: str) -> None:
+        """Append a single successful play event so the log updates as looping continues."""
+        ts = datetime.now().isoformat(sep=' ', timespec='seconds')
+        self._append_log_line(f"PLAY {ts}  {self._normalize_log_path(filepath)}")
+
+    def _append_play_fail(self, filepath: str, reason: str) -> None:
+        ts = datetime.now().isoformat(sep=' ', timespec='seconds')
+        self._append_log_line(f"PLAY_FAIL {ts}  {self._normalize_log_path(filepath)}  {reason}")
 
     def play_file(self, filepath):
         """Play a single audio file."""
+        self._append_play_begin(filepath)
         try:
             print(f"Playing: {filepath}")
             pygame.mixer.music.load(filepath)
             pygame.mixer.music.play()
             self._increment_play_count(filepath)
+            self._append_play_event(filepath)
 
             # Wait for the music to finish playing
             while pygame.mixer.music.get_busy():
@@ -132,13 +140,17 @@ class AudioPlayer:
                 # Count as a play only if fallback succeeds
                 if self._play_with_ffplay(filepath, loop=False):
                     self._increment_play_count(filepath)
+                    self._append_play_event(filepath)
                     return
+                self._append_play_fail(filepath, f"m4a_decode_failed:{e}")
                 print("M4A playback failed.")
                 print("To enable M4A on Windows, install FFmpeg (ffplay) and ensure 'ffplay' is on PATH,")
                 print("or convert the file to .ogg/.wav.")
                 return
+            self._append_play_fail(filepath, f"pygame_error:{e}")
             print(f"Error playing {filepath}: {e}")
         except Exception as e:
+            self._append_play_fail(filepath, f"error:{e}")
             print(f"Error playing {filepath}: {e}")
 
     def play(self, path, loop=False, loop_all=False):
@@ -170,20 +182,31 @@ class AudioPlayer:
             print(f"Looping: {target}")
             print("Press Ctrl+C to stop")
             try:
-                if target.lower().endswith('.m4a'):
-                    # pygame loop for M4A is often unsupported; prefer ffplay if available.
-                    if self._play_with_ffplay(target, loop=True):
-                        # For infinite loop we can't know the exact count; record as 1 start.
-                        self._increment_play_count(target)
-                        return
-                    print("ffplay not available; attempting pygame loop (may fail if M4A codec not supported)...")
-                pygame.mixer.music.load(target)
-                pygame.mixer.music.play(-1)  # -1 means loop indefinitely
-                self._increment_play_count(target)
-
-                # Keep playing until interrupted
+                # To keep the play log updated, we loop by re-playing one iteration at a time,
+                # which lets us increment counts and append a log line per iteration.
                 while True:
-                    time.sleep(1)
+                    self._append_play_begin(target)
+                    if target.lower().endswith('.m4a'):
+                        # Prefer ffplay if available; emulate looping by repeated single plays.
+                        if self._play_with_ffplay(target, loop=False):
+                            self._increment_play_count(target)
+                            self._append_play_event(target)
+                        else:
+                            self._append_play_fail(target, "ffplay_not_available")
+                            # Fall back to pygame single-play; may fail depending on codecs.
+                            pygame.mixer.music.load(target)
+                            pygame.mixer.music.play()
+                            self._increment_play_count(target)
+                            self._append_play_event(target)
+                            while pygame.mixer.music.get_busy():
+                                time.sleep(0.1)
+                    else:
+                        pygame.mixer.music.load(target)
+                        pygame.mixer.music.play()
+                        self._increment_play_count(target)
+                        self._append_play_event(target)
+                        while pygame.mixer.music.get_busy():
+                            time.sleep(0.1)
             except KeyboardInterrupt:
                 print("\nStopped by user")
                 pygame.mixer.music.stop()
@@ -210,185 +233,33 @@ class AudioPlayer:
                 self.play_file(audio_file)
             print("Playback finished")
 
-    def load_schedule(self, schedule_file):
-        """
-        Load and validate schedule from JSON file.
-        
-        Expected JSON format:
-        {
-            "schedules": [
-                {
-                    "start_time": "2026-02-09 18:00:00",
-                    "stop_time": "2026-02-09 20:00:00",
-                    "path": "/path/to/audio/file_or_directory"
-                }
-            ]
-        }
-        
-        When multiple schedules overlap, the first matching schedule takes priority.
-        """
+    def write_run_log(self) -> None:
+        """Append a run summary to the play log file."""
+        ended_at = datetime.now()
+        duration_s = int((ended_at - self.run_started_at).total_seconds())
+
+        total = sum(self.play_counts.values())
+
+        lines = []
+        lines.append(f"Run end:   {ended_at.isoformat(sep=' ', timespec='seconds')}")
+        lines.append(f"Duration:  {duration_s}s")
+        lines.append(f"Total plays (this run): {total}")
+        lines.append("Plays by file:")
+
+        if not self.play_counts:
+            lines.append("  (no plays)")
+        else:
+            for path, count in self.play_counts.most_common():
+                lines.append(f"  {count}  {path}")
+
+        lines.append("")
+
+        self._write_run_log_header_if_needed()
         try:
-            with open(schedule_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            if 'schedules' not in data:
-                print("Error: JSON file must contain 'schedules' array")
-                return None
-            
-            schedules = data['schedules']
-            if not isinstance(schedules, list):
-                print("Error: 'schedules' must be an array")
-                return None
-            
-            # Validate each schedule entry and parse datetimes
-            for i, schedule in enumerate(schedules):
-                if 'start_time' not in schedule:
-                    print(f"Error: Schedule {i} missing 'start_time'")
-                    return None
-                if 'stop_time' not in schedule:
-                    print(f"Error: Schedule {i} missing 'stop_time'")
-                    return None
-                if 'path' not in schedule:
-                    print(f"Error: Schedule {i} missing 'path'")
-                    return None
-                
-                # Validate datetime format and parse
-                try:
-                    start_dt = datetime.fromisoformat(schedule['start_time'])
-                    schedule['_start_dt'] = start_dt
-                except ValueError:
-                    print(f"Error: Schedule {i} has invalid start_time format. Use ISO format: YYYY-MM-DD HH:MM:SS")
-                    return None
-                
-                try:
-                    stop_dt = datetime.fromisoformat(schedule['stop_time'])
-                    schedule['_stop_dt'] = stop_dt
-                except ValueError:
-                    print(f"Error: Schedule {i} has invalid stop_time format. Use ISO format: YYYY-MM-DD HH:MM:SS")
-                    return None
-                
-                # Validate start_time is before stop_time
-                if start_dt >= stop_dt:
-                    print(f"Error: Schedule {i} start_time must be before stop_time")
-                    return None
-                
-                # Validate path exists
-                if not os.path.exists(schedule['path']):
-                    print(f"Error: Schedule {i} path '{schedule['path']}' does not exist")
-                    return None
-            
-            return schedules
-        
-        except json.JSONDecodeError as e:
-            print(f"Error parsing JSON file: {e}")
-            return None
+            with open(self.log_file, 'a', encoding='utf-8') as f:
+                f.write("\n".join(lines))
         except Exception as e:
-            print(f"Error loading schedule file: {e}")
-            return None
-
-    def play_scheduled(self, schedule_file):
-        """
-        Play audio files according to schedule from JSON file.
-        
-        Args:
-            schedule_file: Path to JSON file containing schedule
-        """
-        schedules = self.load_schedule(schedule_file)
-        if schedules is None:
-            return
-        
-        print(f"Loaded {len(schedules)} schedule(s)")
-        print("Monitoring schedule... Press Ctrl+C to stop")
-        
-        active_schedule_id = None
-        
-        try:
-            while True:
-                now = datetime.now()
-                
-                # Check if we need to start or stop playback
-                schedule_active = False
-                current_schedule_id = None
-                
-                for i, schedule in enumerate(schedules):
-                    start_dt = schedule['_start_dt']
-                    stop_dt = schedule['_stop_dt']
-                    
-                    if start_dt <= now < stop_dt:
-                        schedule_active = True
-                        current_schedule_id = i
-                        
-                        # Start new schedule if different from current
-                        if active_schedule_id != current_schedule_id:
-                            # Stop previous playback
-                            if active_schedule_id is not None:
-                                print(f"\nStopping previous schedule")
-                                self.stop_flag = True
-                                pygame.mixer.music.stop()
-                                
-                                # Wait for previous thread to complete
-                                if self.playback_thread is not None and self.playback_thread.is_alive():
-                                    self.playback_thread.join(timeout=2.0)
-                            
-                            print(f"\nStarting scheduled playback:")
-                            print(f"  Path: {schedule['path']}")
-                            print(f"  Start: {schedule['start_time']}")
-                            print(f"  Stop: {schedule['stop_time']}")
-                            
-                            active_schedule_id = current_schedule_id
-                            self.stop_flag = False
-                            
-                            # Start playback in background thread
-                            self.playback_thread = threading.Thread(
-                                target=self._play_until_stopped,
-                                args=(schedule['path'],)
-                            )
-                            self.playback_thread.daemon = True
-                            self.playback_thread.start()
-                        
-                        break
-                
-                # Stop playback if no active schedule
-                if not schedule_active and active_schedule_id is not None:
-                    print(f"\nSchedule ended, stopping playback")
-                    self.stop_flag = True
-                    pygame.mixer.music.stop()
-                    
-                    # Wait for thread to complete
-                    if self.playback_thread is not None and self.playback_thread.is_alive():
-                        self.playback_thread.join(timeout=2.0)
-                    
-                    active_schedule_id = None
-                
-                time.sleep(1)
-        
-        except KeyboardInterrupt:
-            print("\nStopped by user")
-            self.stop_flag = True
-            pygame.mixer.music.stop()
-            
-            # Wait for thread to complete
-            if self.playback_thread is not None and self.playback_thread.is_alive():
-                self.playback_thread.join(timeout=2.0)
-
-    def _play_until_stopped(self, path):
-        """Play audio files from path in a loop until stop_flag is set."""
-        audio_files = self.get_audio_files(path)
-        
-        if not audio_files:
-            print("No audio files found in scheduled path")
-            return
-        
-        while not self.stop_flag:
-            for audio_file in audio_files:
-                if self.stop_flag:
-                    break
-                self.play_file(audio_file)
-            
-            # If only one file and we're not stopping, add small delay before repeating
-            if len(audio_files) == 1 and not self.stop_flag:
-                time.sleep(0.1)
-
+            print(f"Warning: failed to write play log '{self.log_file}': {e}")
 
 def main():
     """Main entry point for the audio player."""
