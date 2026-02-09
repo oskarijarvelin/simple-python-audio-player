@@ -154,27 +154,36 @@ class AudioPlayer:
             f"SCHEDULE_{event} {ts}  idx={schedule_index}  start={start_dt.isoformat(sep=' ', timespec='seconds')}  stop={stop_dt.isoformat(sep=' ', timespec='seconds')}  path={path}"
         )
 
+    def _wait_while_busy(self) -> None:
+        """Sleep-loop while pygame mixer is playing; can be interrupted by stop_flag."""
+        while pygame.mixer.music.get_busy() and not self.stop_flag:
+            time.sleep(0.1)
+
+    def _play_once_pygame(self, filepath: str) -> None:
+        """Play a file once using pygame (non-blocking start, blocking wait)."""
+        pygame.mixer.music.load(filepath)
+        pygame.mixer.music.play()
+        self._wait_while_busy()
+
+    def _log_play_success(self, filepath: str) -> None:
+        """Update counters and log immediately for a successful play start."""
+        self._increment_play_count(filepath)
+        self._append_play_event(filepath)
+
     def play_file(self, filepath):
-        """Play a single audio file."""
+        """Play a single audio file once (best-effort)."""
         self._append_play_begin(filepath)
         try:
             print(f"Playing: {filepath}")
-            pygame.mixer.music.load(filepath)
-            pygame.mixer.music.play()
-            self._increment_play_count(filepath)
-            self._append_play_event(filepath)
-
-            # Wait for the music to finish playing
-            while pygame.mixer.music.get_busy():
-                time.sleep(0.1)
+            self._play_once_pygame(filepath)
+            # If we reached here without exception, consider it a successful play.
+            self._log_play_success(filepath)
         except pygame.error as e:
             # Common on Windows with .m4a when SDL_mixer lacks AAC/M4A codec support.
             if filepath.lower().endswith('.m4a'):
                 print(f"pygame could not decode M4A ({e}). Trying ffplay fallback...")
-                # Count as a play only if fallback succeeds
                 if self._play_with_ffplay(filepath, loop=False):
-                    self._increment_play_count(filepath)
-                    self._append_play_event(filepath)
+                    self._log_play_success(filepath)
                     return
                 self._append_play_fail(filepath, f"m4a_decode_failed:{e}")
                 print("M4A playback failed.")
@@ -186,6 +195,43 @@ class AudioPlayer:
         except Exception as e:
             self._append_play_fail(filepath, f"error:{e}")
             print(f"Error playing {filepath}: {e}")
+
+    def _play_one_iteration_with_logging(self, filepath: str, prefer_ffplay_process: bool = False) -> None:
+        """Play one iteration of a track, logging begin/success/fail.
+
+        Used by both `--loop` and scheduled playback so behavior stays consistent.
+        """
+        self._append_play_begin(filepath)
+
+        # `.m4a` may require ffplay fallback.
+        if filepath.lower().endswith('.m4a'):
+            if prefer_ffplay_process:
+                ok = self._play_with_ffplay_process(filepath)
+            else:
+                ok = self._play_with_ffplay(filepath, loop=False)
+
+            if ok:
+                if not self.stop_flag:
+                    self._log_play_success(filepath)
+                return
+
+            # ffplay not available or failed => last-resort pygame attempt.
+            self._append_play_fail(filepath, "ffplay_failed_or_not_available")
+            try:
+                self._play_once_pygame(filepath)
+                if not self.stop_flag:
+                    self._log_play_success(filepath)
+            except Exception as e:
+                self._append_play_fail(filepath, f"pygame_m4a_failed:{e}")
+            return
+
+        # Non-m4a: use pygame
+        try:
+            self._play_once_pygame(filepath)
+            if not self.stop_flag:
+                self._log_play_success(filepath)
+        except Exception as e:
+            self._append_play_fail(filepath, f"play_failed:{e}")
 
     def play(self, path, loop=False, loop_all=False):
         """
@@ -216,40 +262,14 @@ class AudioPlayer:
             print(f"Looping: {target}")
             print("Press Ctrl+C to stop")
             try:
-                # To keep the play log updated, we loop by re-playing one iteration at a time,
-                # which lets us increment counts and append a log line per iteration.
+                # Loop by replaying one iteration at a time so we can log each iteration.
                 while True:
-                    self._append_play_begin(target)
-                    if target.lower().endswith('.m4a'):
-                        # Prefer ffplay if available; emulate looping by repeated single plays.
-                        if self._play_with_ffplay(target, loop=False):
-                            self._increment_play_count(target)
-                            self._append_play_event(target)
-                        else:
-                            self._append_play_fail(target, "ffplay_not_available")
-                            # Fall back to pygame single-play; may fail depending on codecs.
-                            pygame.mixer.music.load(target)
-                            pygame.mixer.music.play()
-                            self._increment_play_count(target)
-                            self._append_play_event(target)
-                            while pygame.mixer.music.get_busy():
-                                time.sleep(0.1)
-                    else:
-                        pygame.mixer.music.load(target)
-                        pygame.mixer.music.play()
-                        self._increment_play_count(target)
-                        self._append_play_event(target)
-                        while pygame.mixer.music.get_busy():
-                            time.sleep(0.1)
+                    self.stop_flag = False
+                    self._play_one_iteration_with_logging(target, prefer_ffplay_process=False)
             except KeyboardInterrupt:
                 print("\nStopped by user")
+                self.stop_flag = True
                 pygame.mixer.music.stop()
-            except pygame.error as e:
-                if target.lower().endswith('.m4a'):
-                    print(f"M4A looping failed in pygame ({e}).")
-                    print("Install FFmpeg (ffplay) and ensure 'ffplay' is on PATH, or convert to .ogg/.wav.")
-                    return
-                raise
         # Handle all files looping
         elif loop_all:
             print("Looping all files")
@@ -287,35 +307,9 @@ class AudioPlayer:
                 pass
 
     def _play_loop_until_stop(self, filepath: str) -> None:
-        """Play a single file in a loop until stop_flag is set, updating log each iteration."""
+        """Scheduled playback worker: loop until stop_flag is set."""
         while not self.stop_flag:
-            try:
-                self._append_play_begin(filepath)
-
-                if filepath.lower().endswith('.m4a'):
-                    # Use ffplay subprocess mode so scheduled stop can terminate playback promptly.
-                    if self._play_with_ffplay_process(filepath):
-                        if not self.stop_flag:
-                            self._increment_play_count(filepath)
-                            self._append_play_event(filepath)
-                    else:
-                        # Attempt pygame as last resort (may fail for m4a)
-                        pygame.mixer.music.load(filepath)
-                        pygame.mixer.music.play()
-                        self._increment_play_count(filepath)
-                        self._append_play_event(filepath)
-                        while pygame.mixer.music.get_busy() and not self.stop_flag:
-                            time.sleep(0.1)
-                else:
-                    pygame.mixer.music.load(filepath)
-                    pygame.mixer.music.play()
-                    self._increment_play_count(filepath)
-                    self._append_play_event(filepath)
-                    while pygame.mixer.music.get_busy() and not self.stop_flag:
-                        time.sleep(0.1)
-            except Exception as e:
-                self._append_play_fail(filepath, f"scheduled_play_error:{e}")
-                time.sleep(1)
+            self._play_one_iteration_with_logging(filepath, prefer_ffplay_process=True)
 
     def play_scheduled(self, schedule_file: str) -> None:
         """Play audio according to a JSON schedule file."""

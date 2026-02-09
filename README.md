@@ -74,7 +74,7 @@ python audio_player.py --help
 
 ## Scheduled Playing
 
-The scheduled playing feature allows you to automatically play audio files at specific dates and times. This is useful for creating automated playlists, alarms, or timed announcements.
+The scheduled playing feature allows you to automatically play audio files at specific dates and times.
 
 ### Schedule File Format
 
@@ -86,29 +86,28 @@ Create a JSON file with the following structure:
     {
       "start_time": "2026-02-09 18:00:00",
       "stop_time": "2026-02-09 20:00:00",
-      "path": "/path/to/audio/file_or_directory"
-    },
-    {
-      "start_time": "2026-02-10 08:00:00",
-      "stop_time": "2026-02-10 10:00:00",
-      "path": "/path/to/morning/music"
+      "path": "artofdarkness.m4a"
     }
   ]
 }
 ```
 
 Each schedule entry must include:
-- `start_time`: When to start playing (ISO format: YYYY-MM-DD HH:MM:SS)
-- `stop_time`: When to stop playing (ISO format: YYYY-MM-DD HH:MM:SS)
-- `path`: Path to audio file or directory to play
+- `start_time`: When to start playing (`YYYY-MM-DD HH:MM:SS`)
+- `stop_time`: When to stop playing (`YYYY-MM-DD HH:MM:SS`)
+- `path`: **Path to a single audio file** to play
 
-### How It Works
+### Path resolution
 
-1. The player monitors the current time and checks against all schedules
-2. When the current time falls within a schedule's start/stop window, it begins playing
-3. Audio files from the specified path will loop continuously until the stop time
-4. If multiple schedules overlap, the first matching schedule takes priority
-5. When a schedule ends, playback stops automatically
+- If `path` is **relative**, it is resolved relative to the **schedule JSON file's directory**.
+  - Example: if the schedule file is `test_audio/schedule.json` and `path` is `artofdarkness.m4a`, the resolved file is `test_audio/artofdarkness.m4a`.
+- If `path` is **absolute**, it is used as-is.
+
+### Looping behavior in schedule mode
+
+You do **not** need `--loop` when using `--schedule`.
+
+During each schedule window, the selected audio file is replayed repeatedly until `stop_time` is reached.
 
 ### Example Usage
 
@@ -212,7 +211,12 @@ This project is open source and available under the MIT License.
 
 ## Play log
 
-After each run, the script appends a new entry to `play_log.txt` (or the file provided via `--log-file`) including:
-- Run start/end timestamps
-- Total plays during the run
-- Plays per file during the run
+The script appends to `play_log.txt` (or `--log-file`) and writes entries immediately.
+
+Event types:
+- `SCHEDULE_ENTRY` / `SCHEDULE_START` / `SCHEDULE_STOP` (scheduled mode)
+- `PLAY_BEGIN` (playback attempt started)
+- `PLAY` (playback succeeded and was counted)
+- `PLAY_FAIL` (playback failed)
+
+At exit, a run summary is appended with totals per file.
