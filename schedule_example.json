@@ -1,0 +1,19 @@
+{
+  "schedules": [
+    {
+      "start_time": "2026-02-09 18:00:00",
+      "stop_time": "2026-02-09 20:00:00",
+      "path": "/path/to/audio/file_or_directory"
+    },
+    {
+      "start_time": "2026-02-10 08:00:00",
+      "stop_time": "2026-02-10 10:00:00",
+      "path": "/path/to/morning/music"
+    },
+    {
+      "start_time": "2026-02-10 18:00:00",
+      "stop_time": "2026-02-10 22:00:00",
+      "path": "/path/to/evening/playlist"
+    }
+  ]
+}

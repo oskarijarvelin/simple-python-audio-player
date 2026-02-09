@@ -10,6 +10,8 @@ import sys
 import pygame
 import time
 import subprocess
+import json
+import threading
 from shutil import which
 from collections import Counter
 from datetime import datetime
@@ -28,6 +30,8 @@ class AudioPlayer:
         self.log_file = log_file
         self.play_counts = Counter()
         self.run_started_at = datetime.now()
+        self.stop_flag = False
+        self.playback_thread = None
 
         self._run_log_header_written = False
 
@@ -268,11 +272,13 @@ Examples:
   %(prog)s song.mp3 --loop             # Loop a single file
   %(prog)s /path/to/music              # Play all files in directory
   %(prog)s /path/to/music --loop-all   # Loop all files in directory
+  %(prog)s --schedule schedule.json    # Play according to schedule file
         """
     )
     
     parser.add_argument(
         'path',
+        nargs='?',
         help='Path to audio file or directory containing audio files'
     )
     
@@ -294,17 +300,35 @@ Examples:
         help='Path to a log file where this run\'s play counts will be appended (default: play_log.txt)'
     )
 
+    parser.add_argument(
+        '--schedule',
+        help='Path to JSON file containing schedule for playing audio files at specific times'
+    )
+
     args = parser.parse_args()
     
-    # Validate path
-    if not os.path.exists(args.path):
-        print(f"Error: Path '{args.path}' does not exist.")
+    # Validate arguments
+    if not args.schedule and not args.path:
+        print("Error: path argument is required when not using --schedule")
+        parser.print_help()
         sys.exit(1)
     
-    # Create and run player
+    # Create player
     player = AudioPlayer(log_file=args.log_file)
+    
     try:
-        player.play(args.path, loop=args.loop, loop_all=args.loop_all)
+        # Handle scheduled mode
+        if args.schedule:
+            if not os.path.exists(args.schedule):
+                print(f"Error: Schedule file '{args.schedule}' does not exist.")
+                sys.exit(1)
+            player.play_scheduled(args.schedule)
+        else:
+            # Validate path for regular play mode
+            if not os.path.exists(args.path):
+                print(f"Error: Path '{args.path}' does not exist.")
+                sys.exit(1)
+            player.play(args.path, loop=args.loop, loop_all=args.loop_all)
     finally:
         player.write_run_log()
 

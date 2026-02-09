@@ -7,6 +7,7 @@ A simple Python script to play audio files from the command line.
 - Play single audio files or all files in a directory
 - Loop single files or all files indefinitely
 - Supports MP3, WAV, OGG, FLAC, and M4A formats
+- Scheduled playing with date/time configuration via JSON
 - Simple command-line interface
 - Appends a per-run play log (how many times each file was played)
 
@@ -45,6 +46,11 @@ python audio_player.py /path/to/music
 python audio_player.py /path/to/music --loop-all
 ```
 
+### Play according to schedule:
+```bash
+python audio_player.py --schedule schedule.json
+```
+
 ### Get help:
 ```bash
 python audio_player.py --help
@@ -52,10 +58,11 @@ python audio_player.py --help
 
 ## Command-Line Arguments
 
-- `path` - Path to audio file or directory containing audio files (required)
+- `path` - Path to audio file or directory containing audio files (required unless using --schedule)
 - `--loop` - Loop a single audio file indefinitely
 - `--loop-all` - Loop all audio files in a directory indefinitely
 - `--log-file` - Append this run's play counts to the given log file (default: `play_log.txt`)
+- `--schedule` - Path to JSON file containing schedule for playing audio files at specific times
 
 ## Supported Audio Formats
 
@@ -64,6 +71,54 @@ python audio_player.py --help
 - OGG (.ogg)
 - FLAC (.flac)
 - M4A (.m4a)
+
+## Scheduled Playing
+
+The scheduled playing feature allows you to automatically play audio files at specific dates and times. This is useful for creating automated playlists, alarms, or timed announcements.
+
+### Schedule File Format
+
+Create a JSON file with the following structure:
+
+```json
+{
+  "schedules": [
+    {
+      "start_time": "2026-02-09 18:00:00",
+      "stop_time": "2026-02-09 20:00:00",
+      "path": "/path/to/audio/file_or_directory"
+    },
+    {
+      "start_time": "2026-02-10 08:00:00",
+      "stop_time": "2026-02-10 10:00:00",
+      "path": "/path/to/morning/music"
+    }
+  ]
+}
+```
+
+Each schedule entry must include:
+- `start_time`: When to start playing (ISO format: YYYY-MM-DD HH:MM:SS)
+- `stop_time`: When to stop playing (ISO format: YYYY-MM-DD HH:MM:SS)
+- `path`: Path to audio file or directory to play
+
+### How It Works
+
+1. The player monitors the current time and checks against all schedules
+2. When the current time falls within a schedule's start/stop window, it begins playing
+3. Audio files from the specified path will loop continuously until the stop time
+4. If multiple schedules overlap, the first matching schedule takes priority
+5. When a schedule ends, playback stops automatically
+
+### Example Usage
+
+See `schedule_example.json` for a complete example. Run with:
+
+```bash
+python audio_player.py --schedule schedule_example.json
+```
+
+The player will remain running and automatically start/stop playback according to the schedule. Press Ctrl+C to exit.
 
 ### M4A support notes (Windows)
 
