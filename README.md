@@ -86,7 +86,7 @@ Create a JSON file with the following structure:
     {
       "start_time": "2026-02-09 18:00:00",
       "stop_time": "2026-02-09 20:00:00",
-      "path": "artofdarkness.m4a"
+      "path": "song.m4a"
     }
   ]
 }
@@ -100,7 +100,7 @@ Each schedule entry must include:
 ### Path resolution
 
 - If `path` is **relative**, it is resolved relative to the **schedule JSON file's directory**.
-  - Example: if the schedule file is `test_audio/schedule.json` and `path` is `artofdarkness.m4a`, the resolved file is `test_audio/artofdarkness.m4a`.
+  - Example: if the schedule file is `schedule.json` and `path` is `song.m4a`, the resolved file is `song.m4a` in the same folder as `schedule.json`.
 - If `path` is **absolute**, it is used as-is.
 
 ### Looping behavior in schedule mode
